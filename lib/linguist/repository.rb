@@ -10,10 +10,12 @@ module Linguist
   class Repository
     attr_reader :repository
 
+    MAX_TREE_SIZE = 100_000
+
     # Public: Create a new Repository based on the stats of
     # an existing one
-    def self.incremental(repo, commit_oid, old_commit_oid, old_stats)
-      repo = self.new(repo, commit_oid)
+    def self.incremental(repo, commit_oid, old_commit_oid, old_stats, max_tree_size = MAX_TREE_SIZE)
+      repo = self.new(repo, commit_oid, max_tree_size)
       repo.load_existing_stats(old_commit_oid, old_stats)
       repo
     end
@@ -24,11 +26,13 @@ module Linguist
     # repo - a Rugged::Repository object
     # commit_oid - the sha1 of the commit that will be analyzed;
     #              this is usually the master branch
+    # max_tree_size - the maximum tree size to consider for analysis (default: MAX_TREE_SIZE)
     #
     # Returns a Repository
-    def initialize(repo, commit_oid)
+    def initialize(repo, commit_oid, max_tree_size = MAX_TREE_SIZE)
       @repository = repo
       @commit_oid = commit_oid
+      @max_tree_size = max_tree_size
 
       @old_commit_oid = nil
       @old_stats = nil
@@ -96,7 +100,7 @@ module Linguist
       @file_breakdown ||= begin
         breakdown = Hash.new { |h,k| h[k] = Array.new }
         cache.each do |filename, (language, _)|
-          breakdown[language] << filename
+          breakdown[language] << filename.dup.force_encoding("UTF-8").scrub
         end
         breakdown
       end
@@ -129,10 +133,8 @@ module Linguist
     end
 
     protected
-    MAX_TREE_SIZE = 100_000
-
     def compute_stats(old_commit_oid, cache = nil)
-      return {} if current_tree.count_recursive(MAX_TREE_SIZE) >= MAX_TREE_SIZE
+      return {} if current_tree.count_recursive(@max_tree_size) >= @max_tree_size
 
       old_tree = old_commit_oid && Rugged::Commit.lookup(repository, old_commit_oid).tree
       read_index
@@ -161,15 +163,19 @@ module Linguist
 
           blob = Linguist::LazyBlob.new(repository, delta.new_file[:oid], new, mode.to_s(8))
 
-          if blob.include_in_language_stats?
-            file_map[new] = [blob.language.group.name, blob.size]
-          end
+          update_file_map(blob, file_map, new)
 
           blob.cleanup!
         end
       end
 
       file_map
+    end
+
+    def update_file_map(blob, file_map, key)
+      if blob.include_in_language_stats?
+        file_map[key] = [blob.language.group.name, blob.size]
+      end
     end
   end
 end
